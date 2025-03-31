@@ -27,6 +27,8 @@ jobs:
 
       - name: Checkout last commit
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: xmake-io/github-action-setup-xmake@v1
         with:
