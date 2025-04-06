@@ -7,8 +7,8 @@
 #include <dwrite_2.h>
 #include <filesystem>
 #include <fstream>
-#include <nlohmann/json.hpp>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <regex>
 #include <string>
 #include <thread>
@@ -579,7 +579,7 @@ private:
       auto font_family_name = func(locale);
       fonts.push_back(font_family_name);
     }
-    std::sort(fonts.begin(), fonts.end());
+    std::sort(fonts.begin(), fonts.end(), greater<wstring>());
     for (const auto &font : fonts) {
       SendMessage(m_hComboBox, CB_ADDSTRING, 0, (LPARAM)font.c_str());
     }
