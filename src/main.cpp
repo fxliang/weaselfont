@@ -2,33 +2,25 @@
 #include "utils.h"
 #include <ShellScalingApi.h>
 #include <algorithm>
-#include <atomic>
 #include <d2d1_2.h>
 #include <dwrite_2.h>
-#include <filesystem>
-#include <fstream>
 #include <map>
-#include <nlohmann/json.hpp>
 #include <regex>
 #include <string>
-#include <thread>
 #include <vector>
 #include <windows.h>
 #include <wrl.h>
 
 using namespace Microsoft::WRL;
 using namespace std;
-namespace fs = filesystem;
-using json = nlohmann::json;
 
 #define STYLEORWEIGHT (L":[^:]*[^a-f0-9:]+[^:]*")
-#define DEBUG                                                                  \
-  (DebugStream() << "[file: " << __FILE__ << ", line: " << __LINE__ << "] ")
+#define DEBUG DebugStream() << __FUNCTION__ << L" @ line " << __LINE__ << L" : "
 
 typedef ComPtr<IDWriteTextFormat1> PtTextFormat;
 
 const wstring patStyle(L"(\\s*:\\s*italic|\\s*:\\s*oblique|\\s*:\\s*normal)");
-
+// ----------------------------------------------------------------------------
 const wstring patWeight(
     L"(\\s*:\\s*thin|\\s*:\\s*extra_light|\\s*:\\s*ultra_light|\\s*:\\s*light|"
     L"\\s*:\\s*semi_light|\\s*:\\s*medium|\\s*:\\s*demi_"
@@ -41,11 +33,6 @@ const map<wstring, DWRITE_FONT_STYLE> _mapStyle = {
     {L"italic", DWRITE_FONT_STYLE_ITALIC},
     {L"oblique", DWRITE_FONT_STYLE_OBLIQUE},
     {L"normal", DWRITE_FONT_STYLE_NORMAL},
-};
-
-const map<wstring, float> _mapScale = {
-    {L"100%", 1.0f}, {L"110%", 1.1f}, {L"120%", 1.2f}, {L"150%", 1.5f},
-    {L"200%", 2.0f}, {L"250%", 2.5f}, {L"400%", 4.0f},
 };
 
 const map<wstring, DWRITE_FONT_WEIGHT> _mapWeight = {
@@ -136,99 +123,21 @@ void RemoveSpaceAround(wstring &str) {
 }
 // ----------------------------------------------------------------------------
 
-template <class Derived> class BaseWin {
-public:
-  BaseWin() : m_hWnd(nullptr) {}
-  virtual ~BaseWin() {
-    if (m_hWnd)
-      DestroyWindow(m_hWnd);
-  }
-  HWND GetHandle() const { return m_hWnd; }
-  static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam,
-                                     LPARAM lParam) {
-    Derived *pThis = nullptr;
-    if (msg == WM_NCCREATE) {
-      CREATESTRUCT *pCreate = reinterpret_cast<CREATESTRUCT *>(lParam);
-      pThis = reinterpret_cast<Derived *>(pCreate->lpCreateParams);
-      SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
-    } else {
-      pThis =
-          reinterpret_cast<Derived *>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
-    }
-    if (pThis)
-      return pThis->HandleMessage(hwnd, msg, wParam, lParam);
-    return DefWindowProc(hwnd, msg, wParam, lParam);
-  }
-  virtual LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam,
-                                LPARAM lParam) = 0;
-  HWND m_hWnd;
-  RECT m_rect;
-  HINSTANCE m_hInstance;
-};
+struct D2D {
 
-class FontPreviewControl : public BaseWin<FontPreviewControl> {
-public:
-  FontPreviewControl(HWND parent, HINSTANCE hInstance, const RECT &rect,
-                     wstring &fontFace, int &fontPoint, wstring &text)
-      : m_hParent(parent), m_fontFace(fontFace), m_fontPoint(fontPoint),
-        m_text(text) {
-    m_hInstance = hInstance;
-    m_rect = rect;
-    Initialize();
+  D2D(HWND hwnd, RECT rect, const wstring &text)
+      : m_hWnd(hwnd), m_rect(rect), m_text(text) {
+    m_rect.right -= m_rect.left;
+    m_rect.bottom -= m_rect.top;
+    m_rect.top = 0;
+    m_rect.left = 0;
+    InitializeDirect2D();
   }
 
-  void Refresh() {
-    HR(InitFontFormat(m_fontFace, m_fontPoint));
-    InvalidateRect(m_hWnd, nullptr, TRUE);
-  }
-  void Redraw() { InvalidateRect(m_hWnd, nullptr, TRUE); }
-
-  LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_PAINT: {
-      PAINTSTRUCT ps;
-      BeginPaint(hwnd, &ps);
-
-      if (!m_pRenderTarget)
-        InitializeDirect2D();
-
-      m_pRenderTarget->BeginDraw();
-      COLORREF color = GetSysColor(COLOR_BTNFACE);
-      auto d2dColor =
-          D2D1::ColorF(GetRValue(color) / 255.0f, GetGValue(color) / 255.0f,
-                       GetBValue(color) / 255.0f);
-      m_pRenderTarget->Clear(d2dColor);
-      if (m_pTextFormat && !m_text.empty()) {
-        m_pRenderTarget->DrawText(
-            m_text.c_str(), static_cast<UINT32>(m_text.length()),
-            m_pTextFormat.Get(),
-            D2D1::RectF(10, 0, m_rect.right - 10, m_rect.bottom),
-            m_pBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
-      }
-      m_pRenderTarget->EndDraw();
-      EndPaint(hwnd, &ps);
-      return 0;
-    }
-    case WM_SIZE: {
-      if (m_pRenderTarget) {
-        GetClientRect(hwnd, &m_rect);
-        m_pRenderTarget->Resize(D2D1::SizeU(m_rect.right, m_rect.bottom));
-        InvalidateRect(hwnd, nullptr, FALSE);
-      }
-      return 0;
-    }
-    case WM_DESTROY:
-      return 0;
-    default:
-      return DefWindowProc(hwnd, msg, wParam, lParam);
-    }
-  }
-
-private:
   HRESULT InitFontFormat(const wstring &font_face, const int font_point) {
     DWRITE_WORD_WRAPPING wrapping = DWRITE_WORD_WRAPPING_WHOLE_WORD;
     DWRITE_FLOW_DIRECTION flow = DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT;
-    m_dpiScaleFontPoint = GetDpi(m_hWnd);
+    auto m_dpiScaleFontPoint = GetDpi(m_hWnd);
 
     auto init_font = [&](const wstring &font_face, int font_point,
                          PtTextFormat &_pTextFormat,
@@ -266,31 +175,6 @@ private:
     };
     init_font(font_face, font_point, m_pTextFormat, wrapping);
     return S_OK;
-  }
-
-  void Initialize() {
-    RegisterWindowClass();
-    CreateControl();
-    InitializeDirect2D();
-  }
-
-  void RegisterWindowClass() {
-    WNDCLASS wc = {};
-    wc.lpfnWndProc = WindowProc;
-    wc.hInstance = m_hInstance;
-    wc.lpszClassName = m_className.c_str();
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    RegisterClass(&wc);
-  }
-
-  void CreateControl() {
-    m_hWnd = CreateWindowExW(
-        0, m_className.c_str(), L"", WS_VISIBLE | WS_CHILD | WS_CLIPSIBLINGS,
-        m_rect.left, m_rect.top, m_rect.right - m_rect.left,
-        m_rect.bottom - m_rect.top, m_hParent, nullptr, m_hInstance, this);
-    if (!m_hWnd) {
-      throw std::runtime_error("Failed to create control");
-    }
   }
 
   HRESULT SetFontFallback(PtTextFormat textFormat,
@@ -366,9 +250,7 @@ private:
     // 创建 Direct2D 工厂
     HR(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
                          __uuidof(ID2D1Factory), nullptr, &m_pD2DFactory));
-
     // 创建渲染目标
-    GetClientRect(m_hWnd, &m_rect);
     HR(m_pD2DFactory->CreateHwndRenderTarget(
         D2D1::RenderTargetProperties(),
         D2D1::HwndRenderTargetProperties(
@@ -384,159 +266,356 @@ private:
     HR(DWriteCreateFactory(
         DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
         reinterpret_cast<IUnknown **>(m_pDWriteFactory.GetAddressOf())));
-    HR(InitFontFormat(m_fontFace, m_fontPoint));
   }
 
-  HWND m_hParent;
-  const wstring m_className = L"FontPreviewControlClass";
+  void Draw() {
+    if (!m_pRenderTarget)
+      InitializeDirect2D();
 
-  // Direct2D资源
+    m_pRenderTarget->BeginDraw();
+    COLORREF color = GetSysColor(COLOR_BTNFACE);
+    auto d2dColor =
+        D2D1::ColorF(GetRValue(color) / 255.0f, GetGValue(color) / 255.0f,
+                     GetBValue(color) / 255.0f);
+    m_pRenderTarget->Clear(d2dColor);
+    if (m_pTextFormat && !m_text.empty()) {
+      m_pRenderTarget->DrawText(
+          m_text.c_str(), static_cast<UINT32>(m_text.length()),
+          m_pTextFormat.Get(),
+          D2D1::RectF(m_rect.left, m_rect.top, m_rect.right, m_rect.bottom),
+          m_pBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+    }
+    m_pRenderTarget->EndDraw();
+  }
+
   ComPtr<ID2D1Factory> m_pD2DFactory;
   ComPtr<ID2D1HwndRenderTarget> m_pRenderTarget;
   ComPtr<ID2D1SolidColorBrush> m_pBrush;
   ComPtr<IDWriteFactory2> m_pDWriteFactory;
   ComPtr<IDWriteTextFormat1> m_pTextFormat;
 
-  // 字体数据
-  wstring &m_fontFace;
-  int &m_fontPoint;
-  wstring &m_text;
-  float m_dpiScaleFontPoint = 96.0f / 72.0f;
+  const wstring &m_text;
+  HWND m_hWnd;
+  RECT m_rect;
 };
 
-class MainWindow : public BaseWin<MainWindow> {
+class FontSettingDialog {
 public:
-  MainWindow(HINSTANCE hInstance) {
-    m_hInstance = hInstance;
-    Initialize();
+  FontSettingDialog(HINSTANCE hInstance) : hInstance_(hInstance), hDlg_(NULL) {}
+
+  INT_PTR ShowDialog() {
+    return DialogBoxParam(hInstance_, MAKEINTRESOURCE(IDD_DIALOG_FONT), NULL,
+                          DialogProc, reinterpret_cast<LPARAM>(this));
   }
 
-  void Run() {
-    MSG msg = {};
-    while (GetMessage(&msg, nullptr, 0, 0)) {
-      TranslateMessage(&msg);
-      DispatchMessage(&msg);
-    }
-  }
+  wstring m_font_face = L"微软雅黑";
+  wstring m_label_font_face = L"微软雅黑";
+  wstring m_comment_font_face = L"微软雅黑";
 
-  virtual LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam,
-                                LPARAM lParam) {
-    switch (msg) {
-    case WM_COMMAND: {
-      auto ID = LOWORD(wParam);
-      if (ID == IDC_CHECK_BOX) {
-        OnRangeEnableChkBox(wParam);
-      } else if (ID == IDC_EDIT_RANGE_START || ID == IDC_EDIT_RANGE_END) {
-        OnRangeChanged(wParam);
-      } else if (ID == IDC_ADD_FONT) {
-        OnAddFontBtn();
-      } else if (ID == IDC_EDIT_FONT_FACE && (HIWORD(wParam) == EN_CHANGE)) {
-        OnFontFaceEditChanged();
-      } else if (ID == IDC_EDIT_PREVIEW_TEXT && (HIWORD(wParam) == EN_CHANGE)) {
-        m_text = GetTextOfEdit(m_hEditPreviewText);
-        UpdateView();
-      } else if (((ID == IDC_COMBO_BOX_FONT_STYLE) ||
-                  (ID == IDC_COMBO_BOX_FONT_WEIGHT)) &&
-                 HIWORD(wParam) == CBN_SELCHANGE) {
-        OnStyleOrWeightChanged(wParam);
-      } else if (ID == IDC_COMBO_BOX_FONT_POINT &&
-                 HIWORD(wParam) == CBN_SELCHANGE) {
-        OnFontPointChanged(wParam);
-      } else if (ID == IDC_COMBO_BOX_FONT_SCALE &&
-                 HIWORD(wParam) == CBN_SELCHANGE) {
-        OnFontScaleChanged(wParam);
-      }
-    } break;
-    case WM_PAINT: {
-      PAINTSTRUCT ps;
-      HDC hdc = BeginPaint(hwnd, &ps);
-      GetClientRect(hwnd, &m_rect);
-      FillRect(hdc, &m_rect, (HBRUSH)(COLOR_BTNFACE + 1));
-      EndPaint(hwnd, &ps);
-      return 0;
-    }
-    case WM_ERASEBKGND:
-      return 1;
-    case WM_SIZE:
-      OnResize();
-      break;
-    case WM_DESTROY:
-      m_exitFlag = true;
-      {
-        char path[MAX_PATH];
-        GetModuleFileNameA(NULL, path, MAX_PATH);
-        filesystem::path dataPath = fs::path(path).parent_path() / "data.json";
-        // update json file data.json
-        auto fontPointStr = GetComboBoxSelectStr(m_hComboBoxFontPoint);
-        m_fontPoint = std::stoul(fontPointStr);
-        json j;
-        j["font_face"] = wtou8(m_fontFace);
-        j["test_text"] = wtou8(m_text);
-        j["font_point"] = m_fontPoint;
-        try {
-          ofstream json_file(dataPath.string());
-          json_file << std::setw(2) << j << std::endl;
-        } catch (const std::exception &e) {
-          auto errorMessage = ((string("save data failed, ") + e.what() +
-                                ", please check data.json"));
-          MessageBoxA(NULL, errorMessage.c_str(), "错误", MB_ICONERROR | MB_OK);
-        }
-      }
-      PostQuitMessage(0);
-      return 0;
-    default:
-      return DefWindowProc(hwnd, msg, wParam, lParam);
-    }
-    return 0;
-  }
+  int m_font_point;
+  int m_label_font_point;
+  int m_comment_font_point;
 
 private:
-  void Initialize() {
-    RegisterWindowClass();
-    CreateWin();
-    CreateControls();
-    ShowWindow(m_hWnd, true);
-    UpdateWindow(m_hWnd);
-
-    UpdateDataFromJson();
-    initialized = true;
-    StartFileMonitor();
-    m_monitorThread.detach();
-  }
-
-  void UpdateView() {
-    if (initialized) {
-      m_previewControl->Refresh();
-    }
-  }
-
-  void RegisterWindowClass() {
-    WNDCLASS wc = {};
-    wc.lpfnWndProc = WindowProc;
-    wc.hInstance = m_hInstance;
-    wc.lpszClassName = L"MainWindowClass";
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hIcon = LoadIcon(m_hInstance, MAKEINTRESOURCE(IDI_WEASELFONT));
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    if (!RegisterClass(&wc)) {
-      DWORD err = GetLastError();
-      if (err != ERROR_CLASS_ALREADY_EXISTS) {
-        throw std::runtime_error("Failed to register window class");
+  static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam,
+                                     LPARAM lParam) {
+    FontSettingDialog *pThis = nullptr;
+    if (message == WM_INITDIALOG) {
+      pThis = reinterpret_cast<FontSettingDialog *>(lParam);
+      SetWindowLongPtr(hDlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
+      pThis->hDlg_ = hDlg;
+      return pThis->OnInitDialog();
+    } else {
+      pThis = reinterpret_cast<FontSettingDialog *>(
+          GetWindowLongPtr(hDlg, GWLP_USERDATA));
+      if (pThis) {
+        return pThis->HandleMsg(hDlg, message, wParam, lParam);
       }
     }
+    return (INT_PTR)FALSE;
   }
 
-  void CreateWin() {
-    m_hWnd = CreateWindowExW(0, L"MainWindowClass", L"Weasel Font Previewer",
-                             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 800, 400, nullptr,
-                             nullptr, m_hInstance, this);
-    m_rect = {0, 0, 800, 400};
-    if (!m_hWnd)
-      throw std::runtime_error("Failed to create window");
+  INT_PTR HandleMsg(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_COMMAND:
+      return OnCommand(wParam);
+    case WM_PAINT: {
+      PAINTSTRUCT ps;
+      HDC hdc = BeginPaint(hDlg_, &ps);
+      RECT rect;
+      GetClientRect(hDlg_, &rect);
+      FillRect(hdc, &rect, (HBRUSH)(COLOR_BTNFACE + 1));
+      if (m_pD2D)
+        m_pD2D->Draw();
+      EndPaint(hDlg_, &ps);
+      return 0;
+    }
+    }
+    return (INT_PTR)FALSE;
   }
 
-  void InitFontComboBoxItems() {
+  INT_PTR OnInitDialog() {
+    // 在这里初始化窗口控件
+    HICON hIconSmall =
+        (HICON)LoadIcon(hInstance_, MAKEINTRESOURCE(IDI_WEASELFONT));
+    SendMessage(hDlg_, WM_SETICON, ICON_SMALL, (LPARAM)hIconSmall);
+
+    m_hFontPickerCbb = GetDlgItem(hDlg_, IDC_CBB_FONTPICKER);
+    InitFontPickerItems();
+
+    m_hFontStyleCbb = GetDlgItem(hDlg_, IDC_CBB_FONTSTYLE);
+    for (auto &it : _mapStyle) {
+      SendMessage(m_hFontStyleCbb, CB_ADDSTRING, 0, (LPARAM)it.first.c_str());
+    }
+    SendMessage(m_hFontStyleCbb, CB_SETCURSEL, 1, 0);
+    m_hFontWeightCbb = GetDlgItem(hDlg_, IDC_CBB_FONTWEIGHT);
+    for (auto &it : _mapWeight) {
+      SendMessage(m_hFontWeightCbb, CB_ADDSTRING, 0, (LPARAM)it.first.c_str());
+    }
+    SendMessage(m_hFontWeightCbb, CB_SETCURSEL, 9, 0);
+
+    m_hFontFaceNameCbb = GetDlgItem(hDlg_, IDC_CBB_FONTFACE_NAME);
+    const wstring fontFaceName[] = {L"label_font_face", L"font_face",
+                                    L"comment_font_face"};
+    for (const auto &name : fontFaceName)
+      SendMessage(m_hFontFaceNameCbb, CB_ADDSTRING, 0, (LPARAM)name.c_str());
+    SendMessage(m_hFontFaceNameCbb, CB_SETCURSEL, 1, 0);
+
+    m_hComboBoxFontPoint = GetDlgItem(hDlg_, IDC_CBB_FONTPOINT);
+    for (auto i = 0; i < 95; i++) {
+      auto font_point = std::to_wstring(i + 6);
+      SendMessage(m_hComboBoxFontPoint, CB_ADDSTRING, 0,
+                  (LPARAM)font_point.c_str());
+    }
+    SendMessage(m_hComboBoxFontPoint, CB_SETCURSEL, 10, 0);
+
+    m_hCheckBoxRangeEn = GetDlgItem(hDlg_, IDC_CKB_RANGEEN);
+    m_hEditRangeEnd = GetDlgItem(hDlg_, IDC_EDIT_RANGEEND);
+    m_hEditRangeStart = GetDlgItem(hDlg_, IDC_EDIT_RANGESTART);
+    // set start L"0" and end L"10ffff"
+    SetDlgItemText(hDlg_, IDC_EDIT_RANGESTART, L"0");
+    SetDlgItemText(hDlg_, IDC_EDIT_RANGEEND, L"10ffff");
+
+    m_font_face_ptr = &m_font_face;
+    m_font_point_ptr = &m_font_point;
+
+    m_hEditFontFace = GetDlgItem(hDlg_, IDC_EDIT_FONTFACE);
+    m_hEditPreviewText = GetDlgItem(hDlg_, IDC_EDIT_PREVIEW_TEXT);
+    SetDlgItemText(hDlg_, IDC_EDIT_PREVIEW_TEXT, m_text.c_str());
+    SetDlgItemText(hDlg_, IDC_EDIT_FONTFACE, m_font_face_ptr->c_str());
+
+    m_hPreview = GetDlgItem(hDlg_, IDC_STATIC_PREVIEW);
+    RECT rect;
+    GetWindowRect(m_hPreview, &rect);
+    m_pD2D.reset(new D2D(m_hPreview, rect, m_text));
+    UpdatePreview();
+    auto str = GetComboBoxSelectStr(m_hComboBoxFontPoint);
+    m_font_point = m_label_font_point = m_comment_font_point = stoi(str);
+
+    return (INT_PTR)TRUE;
+  }
+
+  wstring GetComboBoxSelectStr(HWND target) {
+    int selectedIndex = SendMessage(target, CB_GETCURSEL, 0, 0);
+    if (selectedIndex != CB_ERR) {
+      int textLength = SendMessage(target, CB_GETLBTEXTLEN, selectedIndex, 0);
+      if (textLength != CB_ERR) {
+        wchar_t buffer[4096] = {0};
+        SendMessage(target, CB_GETLBTEXT, selectedIndex, (LPARAM)buffer);
+        return wstring(buffer);
+      }
+    }
+    return L"";
+  }
+
+  wstring GetTextOfEdit(HWND &hwndEdit) {
+    wchar_t buffer[4096] = {0};
+    LRESULT textLength = SendMessage(hwndEdit, WM_GETTEXTLENGTH, 0, 0);
+    if (textLength > 0) {
+      SendMessage(hwndEdit, WM_GETTEXT, sizeof(buffer) / sizeof(wchar_t),
+                  (LPARAM)buffer);
+      return wstring(buffer);
+    }
+    return wstring(L"");
+  };
+
+  void UpdatePreview() {
+    if (m_pD2D) {
+      *m_font_face_ptr = GetTextOfEdit(m_hEditFontFace);
+      auto font_point_str = GetComboBoxSelectStr(m_hComboBoxFontPoint);
+      *m_font_point_ptr = std::stoi(font_point_str);
+      m_text = GetTextOfEdit(m_hEditPreviewText);
+      RemoveSpaceAround(*m_font_face_ptr);
+      HR(m_pD2D->InitFontFormat(*m_font_face_ptr, *m_font_point_ptr));
+      InvalidateRect(hDlg_, nullptr, true);
+    }
+  }
+
+  void OnAddFont() {
+    auto ret = GetComboBoxSelectStr(m_hFontPickerCbb);
+    auto rangeEnabled = SendMessage(m_hCheckBoxRangeEn, BM_GETCHECK, 0, 0);
+    if (rangeEnabled == BST_CHECKED) {
+      auto start_str = GetTextOfEdit(m_hEditRangeStart);
+      auto end_str = GetTextOfEdit(m_hEditRangeEnd);
+      start_str = regex_replace(start_str, wregex(L"^0+$"), L"0");
+      end_str = regex_replace(end_str, wregex(L"^0+$"), L"0");
+      if (start_str == L"0") {
+        if (!end_str.empty())
+          ret += L"::" + end_str;
+      } else {
+        ret += L":" + start_str;
+        if (!end_str.empty())
+          ret += L":" + end_str;
+      }
+    }
+    auto font_face = GetTextOfEdit(m_hEditFontFace);
+    if (!font_face.empty())
+      font_face += L", ";
+    font_face += ret;
+    SendMessage(m_hEditFontFace, WM_SETTEXT, 0, (LPARAM)font_face.c_str());
+  }
+
+  void OnChangeFontFace() {
+    auto curFontFaceName = GetComboBoxSelectStr(m_hFontFaceNameCbb);
+    if (curFontFaceName == L"label_font_face") {
+      m_font_face_ptr = &m_label_font_face;
+      SendMessage(m_hComboBoxFontPoint, CB_SETCURSEL, m_label_font_point - 6,
+                  0);
+      m_font_point_ptr = &m_label_font_point;
+    } else if (curFontFaceName == L"font_face") {
+      m_font_face_ptr = &m_font_face;
+      SendMessage(m_hComboBoxFontPoint, CB_SETCURSEL, m_font_point - 6, 0);
+      m_font_point_ptr = &m_font_point;
+    } else if (curFontFaceName == L"comment_font_face") {
+      m_font_face_ptr = &m_comment_font_face;
+      SendMessage(m_hComboBoxFontPoint, CB_SETCURSEL, m_comment_font_point - 6,
+                  0);
+      m_font_point_ptr = &m_comment_font_point;
+    }
+    DWRITE_FONT_STYLE style = DWRITE_FONT_STYLE_NORMAL;
+    DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL;
+    DWRITE_FONT_STRETCH stretch = DWRITE_FONT_STRETCH_NORMAL;
+    ParseFontFace(*m_font_face_ptr, weight, style, stretch);
+    wstring style_str(L"normal");
+    for (const auto &it : _mapStyle) {
+      if (it.second == style) {
+        style_str = it.first;
+        break;
+      }
+    }
+    SendMessage(m_hFontStyleCbb, CB_SELECTSTRING, 0, (LPARAM)style_str.c_str());
+    wstring weight_str(L"regular");
+    for (const auto &it : _mapWeight) {
+      if (it.second == weight) {
+        weight_str = it.first;
+        break;
+      }
+    }
+    SendMessage(m_hFontWeightCbb, CB_SELECTSTRING, 0,
+                (LPARAM)weight_str.c_str());
+    SendMessage(m_hEditFontFace, WM_SETTEXT, 0,
+                (LPARAM)m_font_face_ptr->c_str());
+  }
+
+  void OnRangeToggle() {
+    int checkState = SendMessage(m_hCheckBoxRangeEn, BM_GETCHECK, 0, 0);
+    auto status = (checkState == BST_CHECKED) ? BST_CHECKED : BST_UNCHECKED;
+    SendMessage(m_hCheckBoxRangeEn, BM_SETCHECK, status, 0);
+    EnableWindow(m_hEditRangeStart, (checkState == BST_CHECKED));
+    EnableWindow(m_hEditRangeEnd, (checkState == BST_CHECKED));
+  }
+
+  INT_PTR OnChangeFontPoint() {
+    auto font_point_str = GetComboBoxSelectStr(m_hComboBoxFontPoint);
+    if (font_point_str.empty())
+      return (INT_PTR)FALSE;
+    auto font_point = std::stoi(font_point_str);
+    *m_font_point_ptr = font_point;
+    UpdatePreview();
+    return TRUE;
+  }
+
+  void OnChangeFontFaceEdit() {
+    *m_font_face_ptr = GetTextOfEdit(m_hEditFontFace);
+    wstring curfont = L"";
+    if (m_font_face_ptr == &m_label_font_face) {
+      curfont = L"label_font_face";
+    } else if (m_font_face_ptr == &m_comment_font_face) {
+      curfont = L"comment_font_face";
+    } else if (m_font_face_ptr == &m_font_face) {
+      curfont = L"font_face";
+    }
+    UpdatePreview();
+  }
+
+  void HandleRangeInput(int controlId, const wchar_t *defaultValue) {
+    wchar_t range[10] = {0};
+    GetDlgItemText(hDlg_, controlId, range, 10);
+    std::wstring rangeStr(range);
+    std::wregex hexRegex(L"^[0-9a-fA-F]+$");
+
+    if (rangeStr.empty() || !std::regex_match(rangeStr, hexRegex)) {
+      SetDlgItemText(hDlg_, controlId, defaultValue);
+    }
+  }
+
+  void OnStyleOrWeightChanged(WPARAM wParam) {
+    if (HIWORD(wParam) == CBN_SELCHANGE) {
+      bool isWeight = (LOWORD(wParam) == IDC_CBB_FONTWEIGHT);
+      HWND target = isWeight ? m_hFontWeightCbb : m_hFontStyleCbb;
+      const wregex pat = isWeight ? wregex(patWeight) : wregex(patStyle);
+      auto defaultValue = isWeight ? L"regular" : L"normal";
+      int selectedIndex = SendMessage(target, CB_GETCURSEL, 0, 0);
+      auto str = GetComboBoxSelectStr(target);
+      if (str.empty())
+        return;
+      *m_font_face_ptr = GetTextOfEdit(m_hEditFontFace);
+      // 清除原来的字体样式或字重
+      *m_font_face_ptr = regex_replace(*m_font_face_ptr, pat, L"");
+      // 如果不是normal/regular, 使用正则表达式将 buffer 插入到第一个 ":" 之前
+      if (str != defaultValue) {
+        auto pat = wregex(L"(^\\s*(\\w| )+)(\\s*:\\s*)?");
+        const auto replaceStr = L"$1:" + str + L"$3";
+        *m_font_face_ptr = regex_replace(*m_font_face_ptr, pat, replaceStr);
+      }
+      // 更新编辑框内容
+      SendMessage(m_hEditFontFace, WM_SETTEXT, 0,
+                  (LPARAM)m_font_face_ptr->c_str());
+    }
+  }
+
+  INT_PTR OnCommand(WPARAM wParam) {
+    auto commandId = LOWORD(wParam);
+    if (commandId == IDOK || commandId == IDCANCEL) {
+      EndDialog(hDlg_, commandId);
+      return (INT_PTR)TRUE;
+    } else if (commandId == IDC_BTN_ADDFONT) {
+      OnAddFont();
+    } else if (commandId == IDC_CKB_RANGEEN && (HIWORD(wParam) == BN_CLICKED)) {
+      OnRangeToggle();
+    } else if (commandId == IDC_CBB_FONTFACE_NAME &&
+               (HIWORD(wParam) == CBN_SELCHANGE)) {
+      OnChangeFontFace();
+    } else if (commandId == IDC_CBB_FONTPOINT &&
+               HIWORD(wParam) == CBN_SELCHANGE) {
+      return OnChangeFontPoint();
+    } else if (commandId == IDC_EDIT_RANGESTART) {
+      HandleRangeInput(IDC_EDIT_RANGESTART, L"0");
+    } else if (commandId == IDC_EDIT_RANGEEND) {
+      HandleRangeInput(IDC_EDIT_RANGEEND, L"10ffff");
+    } else if (commandId == IDC_EDIT_FONTFACE && HIWORD(wParam) == EN_CHANGE) {
+      OnChangeFontFaceEdit();
+    } else if (commandId == IDC_EDIT_PREVIEW_TEXT &&
+               HIWORD(wParam) == EN_CHANGE) {
+      UpdatePreview();
+    } else if ((commandId == IDC_CBB_FONTSTYLE) ||
+               (commandId == IDC_CBB_FONTWEIGHT)) {
+      OnStyleOrWeightChanged(wParam);
+    }
+    return (INT_PTR)FALSE;
+  }
+
+  void InitFontPickerItems() {
     wchar_t locale[LOCALE_NAME_MAX_LENGTH] = {0};
     if (!GetUserDefaultLocaleName(locale, LOCALE_NAME_MAX_LENGTH)) {
       DWORD errorCode = GetLastError();
@@ -579,414 +658,58 @@ private:
       auto font_family_name = func(locale);
       fonts.push_back(font_family_name);
     }
-    std::sort(fonts.begin(), fonts.end(), greater<wstring>());
+    // std::sort(fonts.begin(), fonts.end());
+    //  sort fonts reverse order
+    std::sort(fonts.begin(), fonts.end(), std::greater<wstring>());
     for (const auto &font : fonts) {
-      SendMessage(m_hComboBox, CB_ADDSTRING, 0, (LPARAM)font.c_str());
+      SendMessage(m_hFontPickerCbb, CB_ADDSTRING, 0, (LPARAM)font.c_str());
     }
+    SendMessage(m_hFontPickerCbb, CB_SETCURSEL, 0, 0);
   }
 
-  void CreateControls() {
-    HDC hdc = GetDC(NULL);
-    int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
-    ReleaseDC(NULL, hdc);
-    float scale = dpi / 72.0f;
-
-    // add a static text to show the font name
-    HWND hStaticFontNameCombo =
-        CreateWindowW(L"STATIC", L"font name:", WS_VISIBLE | WS_CHILD | SS_LEFT,
-                      10, 15, 80, 30, m_hWnd, nullptr, m_hInstance, nullptr);
-    // 创建 ComboBox 并设置高度(展开的)
-    m_hComboBox = CreateWindowW(
-        L"COMBOBOX", L"Font",
-        WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL,
-        100, 13, 150, 300, m_hWnd, (HMENU)IDC_COMBO_BOX, m_hInstance, nullptr);
-    // 初始化字体选择框选项
-    InitFontComboBoxItems();
-    // 范围使能勾选框
-    m_hCheckBox = CreateWindowW(
-        L"BUTTON", L"Enable Range", WS_VISIBLE | WS_CHILD | BS_CHECKBOX, 280,
-        15, 120, 20, m_hWnd, (HMENU)IDC_CHECK_BOX, m_hInstance, nullptr);
-    // 范围起始输入框
-    m_hEditRangeStart = CreateWindowW(
-        L"EDIT", L"0", WS_VISIBLE | WS_CHILD | ES_LEFT | WS_BORDER,
-        m_rect.right - 330, 15, 80, 25, m_hWnd, (HMENU)IDC_EDIT_RANGE_START,
-        m_hInstance, nullptr);
-    // 范围中间的 ~ 符号
-    m_hStaticEnd = CreateWindowW(
-        L"STATIC", L" ~ ", WS_VISIBLE | WS_CHILD | SS_LEFT, m_rect.right - 248,
-        15, 50, 30, m_hWnd, nullptr, m_hInstance, nullptr);
-    // 范围结束输入框
-    m_hEditRangeEnd = CreateWindowW(
-        L"EDIT", L"10ffff", WS_VISIBLE | WS_CHILD | ES_LEFT | WS_BORDER,
-        m_rect.right - 230, 15, 80, 25, m_hWnd, (HMENU)IDC_EDIT_RANGE_END,
-        m_hInstance, nullptr);
-    // 添加文字按键
-    m_hButtonAddFont = CreateWindowW(L"BUTTON", L"Add Font",
-                                     WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-                                     m_rect.right - 130, 15, 120, 30, m_hWnd,
-                                     (HMENU)IDC_ADD_FONT, m_hInstance, nullptr);
-    // 预览文字提示符
-    HWND hStaticPreview =
-        CreateWindowW(L"STATIC", L"content:", WS_VISIBLE | WS_CHILD | SS_LEFT,
-                      10, 55, 70, 30, m_hWnd, nullptr, m_hInstance, nullptr);
-    // 预览文字输入框
-    m_hEditPreviewText = CreateWindowW(
-        L"EDIT", L"Arial",
-        WS_VISIBLE | WS_CHILD | ES_LEFT | WS_BORDER | ES_AUTOHSCROLL, 100, 50,
-        m_rect.right - m_rect.left - 350, 30, m_hWnd,
-        (HMENU)IDC_EDIT_PREVIEW_TEXT, m_hInstance, nullptr);
-    // 字号选择框
-    m_hComboBoxFontPoint = CreateWindowW(
-        L"COMBOBOX", L"Font",
-        WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL,
-        m_rect.right - 130, 50, 120, 300, m_hWnd,
-        (HMENU)IDC_COMBO_BOX_FONT_POINT, m_hInstance, nullptr);
-    // 样式选择框
-    m_hComboBoxFontStyle = CreateWindowW(
-        L"COMBOBOX", L"FontStyle",
-        WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL,
-        m_rect.right - 230, 50, 80, 300, m_hWnd,
-        (HMENU)IDC_COMBO_BOX_FONT_STYLE, m_hInstance, nullptr);
-    for (auto &it : _mapStyle) {
-      SendMessage(m_hComboBoxFontStyle, CB_ADDSTRING, 0,
-                  (LPARAM)it.first.c_str());
-    }
-    // 字重选择框
-    m_hComboBoxFontWeight = CreateWindowW(
-        L"COMBOBOX", L"FontWeight",
-        WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL,
-        m_rect.right - 230, 90, 80, 300, m_hWnd,
-        (HMENU)IDC_COMBO_BOX_FONT_WEIGHT, m_hInstance, nullptr);
-    for (auto &it : _mapWeight) {
-      SendMessage(m_hComboBoxFontWeight, CB_ADDSTRING, 0,
-                  (LPARAM)it.first.c_str());
-    }
-    // 初始化字号选择框
-    for (auto i = 0; i < 95; i++) {
-      auto font_point = std::to_wstring(i + 6);
-      SendMessage(m_hComboBoxFontPoint, CB_ADDSTRING, 0,
-                  (LPARAM)font_point.c_str());
-    }
-    // add a static text to show the font name
-    HWND hStaticFontName =
-        CreateWindowW(L"STATIC", L"font_face:", WS_VISIBLE | WS_CHILD | SS_LEFT,
-                      10, 95, 70, 30, m_hWnd, nullptr, m_hInstance, nullptr);
-    // 字体名称输入框
-    m_hEditFontFace = CreateWindowW(
-        L"EDIT", L"Arial",
-        WS_VISIBLE | WS_CHILD | ES_LEFT | WS_BORDER | ES_AUTOHSCROLL, 100, 100,
-        m_rect.right - m_rect.left - 350, 30, m_hWnd, (HMENU)IDC_EDIT_FONT_FACE,
-        m_hInstance, nullptr);
-    // 缩放选择框
-    m_hComboBoxScale = CreateWindowW(
-        L"COMBOBOX", L"FontWeight",
-        WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL,
-        m_rect.right - 130, 90, 120, 300, m_hWnd,
-        (HMENU)IDC_COMBO_BOX_FONT_SCALE, m_hInstance, nullptr);
-    for (auto &it : _mapScale) {
-      SendMessage(m_hComboBoxScale, CB_ADDSTRING, 0, (LPARAM)it.first.c_str());
-    }
-    // 控件字体初始化
-    HFONT hFont =
-        CreateFontW(15 * scale, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                    DEFAULT_PITCH, L"Segoe UI");
-
-    // 设置控件字体及初始化选择
-#define SETFONT(hwnd, font) SendMessage(hwnd, WM_SETFONT, (WPARAM)font, true)
-#define SETFONT_MULTI(font, ...)                                               \
-  do {                                                                         \
-    HWND hwnds[] = {__VA_ARGS__};                                              \
-    for (int i = 0; i < sizeof(hwnds) / sizeof(hwnds[0]); ++i) {               \
-      SETFONT(hwnds[i], font);                                                 \
-    }                                                                          \
-  } while (0)
-    SETFONT_MULTI(hFont, m_hComboBoxScale, m_hButtonAddFont, m_hComboBox,
-                  m_hComboBoxFontPoint, m_hComboBoxFontWeight,
-                  m_hComboBoxFontStyle, m_hCheckBox, m_hEditRangeStart,
-                  m_hEditRangeEnd, m_hStaticEnd, m_hEditFontFace,
-                  m_hEditPreviewText, hStaticFontName, hStaticFontNameCombo,
-                  hStaticPreview);
-
-    SendMessage(m_hComboBox, CB_SETCURSEL, (WPARAM)0, 0);
-    SendMessage(m_hComboBoxFontPoint, CB_SETCURSEL, (WPARAM)14, 0);
-    SendMessage(m_hComboBoxFontStyle, CB_SETCURSEL, (WPARAM)1, 0);
-    SendMessage(m_hComboBoxFontWeight, CB_SETCURSEL, (WPARAM)9, 0);
-    SendMessage(m_hComboBoxScale, CB_SETCURSEL, (WPARAM)0, 0);
-    EnableWindow(m_hEditRangeStart, false);
-    EnableWindow(m_hEditRangeEnd, false);
-    // 创建预览控件
-    RECT rc = {0, previewTop, m_rect.right, m_rect.bottom};
-    m_previewControl.reset(new FontPreviewControl(
-        m_hWnd, m_hInstance, rc, m_fontFace, m_fontPoint, m_text));
-  }
-
-  void StartFileMonitor() {
-    m_monitorThread = thread([this]() { MonitorFileChanges(); });
-  }
-
-  void MonitorFileChanges() {
-    char path[MAX_PATH];
-    GetModuleFileNameA(NULL, path, MAX_PATH);
-    fs::path fullFilePath = fs::path(path).parent_path() / "data.json";
-    fs::path dirPath = fullFilePath.parent_path();
-
-    HANDLE hDir = CreateFile(
-        dirPath.c_str(), FILE_LIST_DIRECTORY,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
-
-    if (hDir == INVALID_HANDLE_VALUE) {
-      OutputDebugString(L"无法打开目录");
-      return;
-    }
-
-    while (!m_exitFlag) {
-      DWORD dwBytesReturned;
-      char buffer[1024];
-
-      if (ReadDirectoryChangesW(hDir, &buffer, sizeof(buffer), FALSE,
-                                FILE_NOTIFY_CHANGE_LAST_WRITE, &dwBytesReturned,
-                                NULL, NULL)) {
-        FILE_NOTIFY_INFORMATION *pNotify =
-            reinterpret_cast<FILE_NOTIFY_INFORMATION *>(buffer);
-        wstring file_name(pNotify->FileName,
-                          pNotify->FileNameLength / sizeof(WCHAR));
-        if (pNotify->Action == FILE_ACTION_MODIFIED &&
-            file_name == L"data.json") {
-          if (!initialized)
-            UpdateDataFromJson();
-        }
-      }
-      this_thread::sleep_for(chrono::seconds(1));
-    }
-    CloseHandle(hDir);
-  }
-
-  void UpdateDataFromJson() {
-    char path[MAX_PATH] = {0};
-    GetModuleFileNameA(NULL, path, MAX_PATH);
-    filesystem::path dataPath = fs::path(path).parent_path() / "data.json";
-    if (fs::exists(dataPath)) {
-      try {
-        ifstream json_file(dataPath.string());
-        json j;
-        json_file >> j;
-        m_fontFace = u8tow(j["font_face"]);
-        m_text = u8tow(j["test_text"]);
-        m_fontPoint = j["font_point"];
-        auto rmspace = RemoveSpaceAround;
-        rmspace(m_fontFace);
-      } catch (const exception &e) {
-        auto errorMessage = ((string("update data failed, ") + e.what() +
-                              ", please check data.json"));
-        MessageBoxA(NULL, errorMessage.c_str(), "错误", MB_ICONERROR | MB_OK);
-      }
-    }
-    // set m_hEditFontFace text by m_text
-    SendMessage(m_hEditFontFace, EM_SETLIMITTEXT, (WPARAM)65535, 0);
-    SendMessage(m_hEditFontFace, WM_SETTEXT, 0, (LPARAM)m_fontFace.c_str());
-    SendMessage(m_hEditPreviewText, WM_SETTEXT, 0, (LPARAM)m_text.c_str());
-    SendMessage(m_hComboBoxFontPoint, CB_SETCURSEL, (WPARAM)(m_fontPoint - 6),
-                0);
-    OnFontScaleChanged(0);
-    m_previewControl->Refresh();
-  }
-
-  wstring GetCurrentFontToAdd() {
-    auto ret = GetComboBoxSelectStr(m_hComboBox);
-    int checkState = SendMessage(m_hCheckBox, BM_GETCHECK, 0, 0);
-    if (checkState == BST_CHECKED) {
-      auto start_str = GetTextOfEdit(m_hEditRangeStart);
-      auto end_str = GetTextOfEdit(m_hEditRangeEnd);
-      start_str = regex_replace(start_str, wregex(L"^0+$"), L"0");
-      end_str = regex_replace(end_str, wregex(L"^0+$"), L"0");
-      if (start_str == L"0") {
-        if (!end_str.empty())
-          ret += L"::" + end_str;
-      } else {
-        ret += L":" + start_str;
-        if (!end_str.empty())
-          ret += L":" + end_str;
-      }
-    }
-    return ret;
-  }
-
-  wstring GetTextOfEdit(HWND &hwndEdit) {
-    wchar_t buffer[4096] = {0};
-    LRESULT textLength = SendMessage(hwndEdit, WM_GETTEXTLENGTH, 0, 0);
-    if (textLength > 0) {
-      SendMessage(hwndEdit, WM_GETTEXT, sizeof(buffer) / sizeof(wchar_t),
-                  (LPARAM)buffer);
-      return wstring(buffer);
-    }
-    return wstring(L"");
-  };
-
-  void OnResize() {
-    GetClientRect(m_hWnd, &m_rect);
-    SetWindowPos(m_hButtonAddFont, nullptr, m_rect.right - 130, 10, 120, 30,
-                 SWP_NOZORDER);
-    SetWindowPos(m_hEditPreviewText, nullptr, 100, 50,
-                 m_rect.right - m_rect.left - 350, 30, SWP_NOZORDER);
-
-    SetWindowPos(m_hEditFontFace, nullptr, 100, 90,
-                 m_rect.right - m_rect.left - 350, 30, SWP_NOZORDER);
-    SetWindowPos(m_hComboBoxScale, nullptr, m_rect.right - 130, 90, 120, 300,
-                 SWP_NOZORDER);
-    SetWindowPos(m_hComboBoxFontPoint, nullptr, m_rect.right - 130, 50, 120,
-                 300, SWP_NOZORDER);
-    SetWindowPos(m_hStaticEnd, nullptr, m_rect.right - 248, 15, 50, 30,
-                 SWP_NOZORDER);
-    SetWindowPos(m_hEditRangeStart, nullptr, m_rect.right - 330, 15, 80, 25,
-                 SWP_NOZORDER);
-    SetWindowPos(m_hEditRangeEnd, nullptr, m_rect.right - 230, 15, 80, 25,
-                 SWP_NOZORDER);
-    SetWindowPos(m_hComboBoxFontStyle, nullptr, m_rect.right - 230, 50, 80, 300,
-                 SWP_NOZORDER);
-    SetWindowPos(m_hComboBoxFontWeight, nullptr, m_rect.right - 230, 90, 80,
-                 300, SWP_NOZORDER);
-    SetWindowPos(m_previewControl->m_hWnd, nullptr, 0, previewTop, m_rect.right,
-                 max((long int)1, m_rect.bottom - previewTop), SWP_NOZORDER);
-    RedrawWindow(m_hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
-  }
-
-  wstring GetComboBoxSelectStr(HWND target) {
-    int selectedIndex = SendMessage(target, CB_GETCURSEL, 0, 0);
-    if (selectedIndex != CB_ERR) {
-      int textLength = SendMessage(target, CB_GETLBTEXTLEN, selectedIndex, 0);
-      if (textLength != CB_ERR) {
-        wchar_t buffer[4096] = {0};
-        SendMessage(target, CB_GETLBTEXT, selectedIndex, (LPARAM)buffer);
-        return wstring(buffer);
-      }
-    }
-    return L"";
-  }
-
-  void OnFontPointChanged(WPARAM wParam) {
-    auto fontPointStr = GetComboBoxSelectStr(m_hComboBoxFontPoint);
-    m_fontPoint = std::stoul(fontPointStr) * m_scale;
-    UpdateView();
-  }
-
-  void OnFontScaleChanged(WPARAM wParam) {
-    m_scale = _mapScale.at(GetComboBoxSelectStr(m_hComboBoxScale));
-    auto fontPointStr = GetComboBoxSelectStr(m_hComboBoxFontPoint);
-    m_fontPoint = std::stoul(fontPointStr) * m_scale;
-    UpdateView();
-  }
-
-  void OnFontFaceEditChanged() {
-    m_fontFace = GetTextOfEdit(m_hEditFontFace);
-    RemoveSpaceAround(m_fontFace);
-    UpdateView();
-  }
-
-  void OnRangeChanged(WPARAM wParam) {
-    bool isStart = (LOWORD(wParam) == IDC_EDIT_RANGE_START);
-    HWND target = isStart ? m_hEditRangeStart : m_hEditRangeEnd;
-    auto fallback = isStart ? L"0" : L"10ffff";
-    if (HIWORD(wParam) == EN_CHANGE) {
-      const wregex regex(L"^[0-9a-fA-F]+$");
-      auto str = GetTextOfEdit(target);
-      if (!regex_match(str, regex))
-        SendMessage(target, WM_SETTEXT, 0, (LPARAM)fallback); // 设置为默认值
-    }
-  }
-
-  void OnStyleOrWeightChanged(WPARAM wParam) {
-    if (HIWORD(wParam) == CBN_SELCHANGE) {
-      bool isWeight = (LOWORD(wParam) == IDC_COMBO_BOX_FONT_WEIGHT);
-      HWND target = isWeight ? m_hComboBoxFontWeight : m_hComboBoxFontStyle;
-      const wregex pat = isWeight ? wregex(patWeight) : wregex(patStyle);
-      auto defaultValue = isWeight ? L"regular" : L"normal";
-      int selectedIndex = SendMessage(target, CB_GETCURSEL, 0, 0);
-      auto str = GetComboBoxSelectStr(target);
-      if (str.empty())
-        return;
-      m_fontFace = GetTextOfEdit(m_hEditFontFace);
-      // 清除原来的字体样式或字重
-      m_fontFace = regex_replace(m_fontFace, pat, L"");
-      // 如果不是normal/regular, 使用正则表达式将 buffer 插入到第一个 ":" 之前
-      if (str != defaultValue) {
-        auto pat = wregex(L"(^\\s*(\\w| )+)(\\s*:\\s*)?");
-        const auto replaceStr = L"$1 : " + str + L"$3";
-        m_fontFace = regex_replace(m_fontFace, pat, replaceStr);
-      }
-      // 更新编辑框内容
-      SendMessage(m_hEditFontFace, WM_SETTEXT, 0, (LPARAM)m_fontFace.c_str());
-    }
-  }
-
-  void OnRangeEnableChkBox(WPARAM wParam) {
-    if (HIWORD(wParam) == BN_CLICKED) {
-      int checkState = SendMessage(m_hCheckBox, BM_GETCHECK, 0, 0);
-      auto status = (checkState == BST_CHECKED) ? BST_UNCHECKED : BST_CHECKED;
-      SendMessage(m_hCheckBox, BM_SETCHECK, status, 0);
-      EnableWindow(m_hEditRangeStart, !(checkState == BST_CHECKED));
-      EnableWindow(m_hEditRangeEnd, !(checkState == BST_CHECKED));
-    }
-  }
-
-  void OnAddFontBtn() {
-    auto font = GetCurrentFontToAdd();
-    auto font_face = GetTextOfEdit(m_hEditFontFace);
-    if (!font_face.empty())
-      font_face += L", ";
-    font_face += font;
-    SendMessage(m_hEditFontFace, WM_SETTEXT, 0, (LPARAM)font_face.c_str());
-  }
-
-  enum {
-    IDC_PREVIEW = 200,
-    IDC_COMBO_BOX,
-    IDC_COMBO_BOX_FONT_POINT,
-    IDC_COMBO_BOX_FONT_STYLE,
-    IDC_COMBO_BOX_FONT_WEIGHT,
-    IDC_CHECK_BOX,
-    IDC_EDIT_RANGE_START,
-    IDC_EDIT_RANGE_END,
-    IDC_EDIT_FONT_FACE,
-    IDC_EDIT_PREVIEW_TEXT,
-    IDC_COMBO_BOX_FONT_SCALE,
-    IDC_ADD_FONT
-  };
-
-  HWND m_hComboBox = nullptr;
-  HWND m_hCheckBox = nullptr;
+  HWND m_hFontPickerCbb = nullptr;
+  HWND m_hFontStyleCbb = nullptr;
+  HWND m_hFontWeightCbb = nullptr;
+  HWND m_hFontFaceNameCbb = nullptr;
+  HWND m_hComboBoxFontPoint = nullptr;
+  HWND m_hCheckBoxRangeEn = nullptr;
   HWND m_hEditRangeStart = nullptr;
   HWND m_hEditRangeEnd = nullptr;
-  HWND m_hButtonAddFont = nullptr;
   HWND m_hEditFontFace = nullptr;
   HWND m_hEditPreviewText = nullptr;
-  HWND m_hComboBoxFontPoint = nullptr;
-  HWND m_hComboBoxFontStyle = nullptr;
-  HWND m_hComboBoxFontWeight = nullptr;
-  HWND m_hStaticEnd = nullptr;
-  HWND m_hComboBoxScale = nullptr;
+  HWND m_hPreview = nullptr;
 
-  std::unique_ptr<FontPreviewControl> m_previewControl;
+  wstring *m_font_face_ptr = nullptr;
+  int *m_font_point_ptr = nullptr;
 
-  wstring m_fontFace = L"Arial";
-  int m_fontPoint = 16;
-  std::wstring m_text = L"Sample Text";
-  float m_scale = 1.0;
+  //wstring m_text = L"Innovation in China，智造中国，慧及全球👉😁👈";
+  wstring m_text = L"Weasel Powered by Rime 聰明的輸入法懂我心意🎉🎉🎉";
+  std::unique_ptr<D2D> m_pD2D;
 
-  bool initialized = false;
-  const int previewTop = 120;
-  thread m_monitorThread;
-  atomic<bool> m_exitFlag;
+  HINSTANCE hInstance_;
+  HWND hDlg_;
 };
 
-int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
-  // SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
-  try {
-    MainWindow(hInstance).Run();
-  } catch (const std::exception &e) {
-    MessageBoxA(nullptr, e.what(), "Error", MB_ICONERROR);
-    return 1;
-  }
+int APIENTRY _tWinMain(HINSTANCE hInstance,
+                       HINSTANCE hPrevInstance,
+                       LPTSTR lpCmdLine,
+                       int nCmdShow) {
+  UNREFERENCED_PARAMETER(hPrevInstance);
+  UNREFERENCED_PARAMETER(nCmdShow);
+  //LANGID id = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
+  //LANGID id = MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL);
+  //SetThreadUILanguage(id);
+  //SetThreadLocale(id);
+  SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
+  FontSettingDialog dialog(hInstance);
+  auto ret = dialog.ShowDialog();
+  DEBUG << "dialog.ShowDialog(): " << ((ret == IDOK) ? L"OK" : L"Cancel");
+  DEBUG << "font_face: " << dialog.m_font_face
+        << ", font_point: " << dialog.m_font_point;
+  DEBUG << "label_font_face: " << dialog.m_label_font_face
+        << ", label_font_point: " << dialog.m_label_font_point;
+  DEBUG << "comment_font_face: " << dialog.m_comment_font_face
+        << ", comment_font_point: " << dialog.m_comment_font_point;
+
   return 0;
 }
