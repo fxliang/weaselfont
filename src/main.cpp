@@ -339,6 +339,13 @@ private:
     switch (message) {
     case WM_COMMAND:
       return OnCommand(wParam);
+    case WM_DPICHANGED:
+    case WM_MOVE:
+      RECT rect;
+      GetWindowRect(m_hPreview, &rect);
+      m_pD2D.reset(new D2D(m_hPreview, rect, m_text));
+      UpdatePreview();
+      return 0;
     case WM_PAINT: {
       PAINTSTRUCT ps;
       HDC hdc = BeginPaint(hDlg_, &ps);
@@ -682,7 +689,7 @@ private:
   wstring *m_font_face_ptr = nullptr;
   int *m_font_point_ptr = nullptr;
 
-  //wstring m_text = L"Innovation in China，智造中国，慧及全球👉😁👈";
+  // wstring m_text = L"Innovation in China，智造中国，慧及全球👉😁👈";
   wstring m_text = L"Weasel Powered by Rime 聰明的輸入法懂我心意🎉🎉🎉";
   std::unique_ptr<D2D> m_pD2D;
 
@@ -690,16 +697,14 @@ private:
   HWND hDlg_;
 };
 
-int APIENTRY _tWinMain(HINSTANCE hInstance,
-                       HINSTANCE hPrevInstance,
-                       LPTSTR lpCmdLine,
-                       int nCmdShow) {
+int APIENTRY _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
+                       LPTSTR lpCmdLine, int nCmdShow) {
   UNREFERENCED_PARAMETER(hPrevInstance);
   UNREFERENCED_PARAMETER(nCmdShow);
-  //LANGID id = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
-  //LANGID id = MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL);
-  //SetThreadUILanguage(id);
-  //SetThreadLocale(id);
+  // LANGID id = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
+  // LANGID id = MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL);
+  // SetThreadUILanguage(id);
+  // SetThreadLocale(id);
   SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
   FontSettingDialog dialog(hInstance);
   auto ret = dialog.ShowDialog();
