@@ -125,7 +125,7 @@ void RemoveSpaceAround(wstring &str) {
 
 struct D2D {
 
-  D2D(HWND hwnd, RECT rect, const wstring &text,
+  D2D(HWND &hwnd, const RECT &rect, const wstring &text,
       COLORREF color = GetSysColor(COLOR_BTNFACE))
       : m_hWnd(hwnd), m_rect(rect), m_text(text) {
     m_color = D2D1::ColorF(GetRValue(color) / 255.0f, GetGValue(color) / 255.0f,
@@ -140,7 +140,7 @@ struct D2D {
   HRESULT InitFontFormat(const wstring &font_face, const int font_point) {
     DWRITE_WORD_WRAPPING wrapping = DWRITE_WORD_WRAPPING_WHOLE_WORD;
     DWRITE_FLOW_DIRECTION flow = DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT;
-    auto m_dpiScaleFontPoint = GetDpi(m_hWnd);
+    GetDpi();
 
     auto init_font = [&](const wstring &font_face, int font_point,
                          PtTextFormat &_pTextFormat,
@@ -237,7 +237,7 @@ struct D2D {
     return S_OK;
   }
 
-  float GetDpi(HWND m_hWnd) {
+  bool GetDpi() {
     HMONITOR const mon = MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST);
     UINT x = 0, y = 0;
     HR(GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &x, &y));
@@ -246,7 +246,9 @@ struct D2D {
     if (m_dpiY == 0)
       m_dpiX = m_dpiY = 96.0;
     auto dpiScaleFontPoint = m_dpiY / 72.0f;
-    return dpiScaleFontPoint;
+    bool ret = (dpiScaleFontPoint == m_dpiScaleFontPoint);
+    m_dpiScaleFontPoint = dpiScaleFontPoint;
+    return ret;
   }
 
   void InitializeDirect2D() {
@@ -295,6 +297,7 @@ struct D2D {
 
   D2D1::ColorF m_color = D2D1::ColorF::White;
   const wstring &m_text;
+  float m_dpiScaleFontPoint = 1.0f;
   HWND m_hWnd;
   RECT m_rect;
 };
@@ -341,9 +344,11 @@ private:
       return OnCommand(wParam);
     case WM_DPICHANGED:
     case WM_MOVE:
+      if (m_pD2D && m_pD2D->GetDpi())
+        return 0;
       RECT rect;
       GetWindowRect(m_hPreview, &rect);
-      m_pD2D.reset(new D2D(m_hPreview, rect, m_text));
+      m_pD2D = make_unique<D2D>(m_hPreview, rect, m_text);
       UpdatePreview();
       return 0;
     case WM_PAINT: {
@@ -414,7 +419,7 @@ private:
     m_hPreview = GetDlgItem(hDlg_, IDC_STATIC_PREVIEW);
     RECT rect;
     GetWindowRect(m_hPreview, &rect);
-    m_pD2D.reset(new D2D(m_hPreview, rect, m_text));
+    m_pD2D = make_unique<D2D>(m_hPreview, rect, m_text);
     UpdatePreview();
     auto str = GetComboBoxSelectStr(m_hComboBoxFontPoint);
     m_font_point = m_label_font_point = m_comment_font_point = stoi(str);
@@ -438,7 +443,7 @@ private:
   wstring GetTextOfEdit(HWND &hwndEdit) {
     wchar_t buffer[4096] = {0};
     LRESULT textLength = SendMessage(hwndEdit, WM_GETTEXTLENGTH, 0, 0);
-    if (textLength > 0) {
+    if (textLength > 0 && textLength <= (_countof(buffer) - 1)) {
       SendMessage(hwndEdit, WM_GETTEXT, sizeof(buffer) / sizeof(wchar_t),
                   (LPARAM)buffer);
       return wstring(buffer);
