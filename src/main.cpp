@@ -125,8 +125,11 @@ void RemoveSpaceAround(wstring &str) {
 
 struct D2D {
 
-  D2D(HWND hwnd, RECT rect, const wstring &text)
+  D2D(HWND hwnd, RECT rect, const wstring &text,
+      COLORREF color = GetSysColor(COLOR_BTNFACE))
       : m_hWnd(hwnd), m_rect(rect), m_text(text) {
+    m_color = D2D1::ColorF(GetRValue(color) / 255.0f, GetGValue(color) / 255.0f,
+                           GetBValue(color) / 255.0f);
     m_rect.right -= m_rect.left;
     m_rect.bottom -= m_rect.top;
     m_rect.top = 0;
@@ -273,11 +276,7 @@ struct D2D {
       InitializeDirect2D();
 
     m_pRenderTarget->BeginDraw();
-    COLORREF color = GetSysColor(COLOR_BTNFACE);
-    auto d2dColor =
-        D2D1::ColorF(GetRValue(color) / 255.0f, GetGValue(color) / 255.0f,
-                     GetBValue(color) / 255.0f);
-    m_pRenderTarget->Clear(d2dColor);
+    m_pRenderTarget->Clear(m_color);
     if (m_pTextFormat && !m_text.empty()) {
       m_pRenderTarget->DrawText(
           m_text.c_str(), static_cast<UINT32>(m_text.length()),
@@ -294,6 +293,7 @@ struct D2D {
   ComPtr<IDWriteFactory2> m_pDWriteFactory;
   ComPtr<IDWriteTextFormat1> m_pTextFormat;
 
+  D2D1::ColorF m_color = D2D1::ColorF::White;
   const wstring &m_text;
   HWND m_hWnd;
   RECT m_rect;
