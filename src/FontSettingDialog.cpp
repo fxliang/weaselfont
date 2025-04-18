@@ -323,7 +323,7 @@ void FontSettingDialog::OnStyleOrWeightChanged(WPARAM wParam) {
   }
 }
 
-INT_PTR FontSettingDialog::OnCommand(UINT, WPARAM wParam, LPARAM lParam, BOOL) {
+LRESULT FontSettingDialog::OnCommand(UINT, WPARAM wParam, LPARAM lParam, BOOL) {
   auto commandId = LOWORD(wParam);
   if (commandId == IDOK || commandId == IDCANCEL) {
     EndDialog(commandId);

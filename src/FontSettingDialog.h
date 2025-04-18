@@ -255,7 +255,6 @@ protected:
 END_MSG_MAP()
 
 private:
-  INT_PTR HandleMsg(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
   LRESULT OnInitDialog(UINT, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
   LRESULT OnPaint(UINT, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
   LRESULT OnOk(WORD, WORD, HWND, BOOL&);
