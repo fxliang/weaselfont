@@ -309,7 +309,7 @@ void FontSettingDialog::OnStyleOrWeightChanged(WPARAM wParam) {
     *m_font_face_ptr = regex_replace(*m_font_face_ptr, pat, L"");
     // 如果不是normal/regular, 使用正则表达式将 buffer 插入到第一个 ":" 之前
     if (str != defaultValue) {
-      auto pat = wregex(L"(^\\s*(\\w| )+)(\\s*:\\s*)?");
+      auto pat = wregex(L"(^\\s*[^:,]+)(\\s*:\\s*)?");
       const auto replaceStr = L"$1:" + str + L"$3";
       *m_font_face_ptr = regex_replace(*m_font_face_ptr, pat, replaceStr);
     }
