@@ -1,5 +1,5 @@
-#include "stdafx.h"
 #include "FontSettingDialog.h"
+#include "stdafx.h"
 
 const wstring patStyle(L"(\\s*:\\s*italic|\\s*:\\s*oblique|\\s*:\\s*normal)");
 const wstring patWeight(
@@ -39,21 +39,21 @@ const map<wstring, float> _mapDpiScale = {
     {L"200%", 2.0f}, {L"250%", 2.5f}, {L"400%", 4.0f},
 };
 
-std::vector<wstring> WstrSplit(const wstring& in, const wstring& delim) {
+std::vector<wstring> WstrSplit(const wstring &in, const wstring &delim) {
   wregex re{delim};
   return std::vector<wstring>{
       wsregex_token_iterator(in.begin(), in.end(), re, -1),
       wsregex_token_iterator()};
 }
 
-wstring MatchWordsOutLowerCaseTrim1st(const wstring& wstr, const wstring& pat) {
+wstring MatchWordsOutLowerCaseTrim1st(const wstring &wstr, const wstring &pat) {
   wstring mat = L"";
   wsmatch mc;
   wregex pattern(pat, wregex::icase);
   wstring::const_iterator iter = wstr.cbegin();
   wstring::const_iterator end = wstr.cend();
   while (regex_search(iter, end, mc, pattern)) {
-    for (const auto& m : mc) {
+    for (const auto &m : mc) {
       mat = m;
       mat = mat.substr(1);
       break;
@@ -65,9 +65,8 @@ wstring MatchWordsOutLowerCaseTrim1st(const wstring& wstr, const wstring& pat) {
   return res;
 }
 
-void ParseFontFace(const wstring& fontFaceStr,
-                   DWRITE_FONT_WEIGHT& fontWeight,
-                   DWRITE_FONT_STYLE& fontStyle) {
+void ParseFontFace(const wstring &fontFaceStr, DWRITE_FONT_WEIGHT &fontWeight,
+                   DWRITE_FONT_STYLE &fontStyle) {
   const wstring weight = MatchWordsOutLowerCaseTrim1st(fontFaceStr, patWeight);
   const auto it = _mapWeight.find(weight);
   fontWeight =
@@ -78,31 +77,30 @@ void ParseFontFace(const wstring& fontFaceStr,
   fontStyle = (it2 != _mapStyle.end()) ? it2->second : DWRITE_FONT_STYLE_NORMAL;
 }
 
-void RemoveSpaceAround(wstring& str) {
+void RemoveSpaceAround(wstring &str) {
   str = regex_replace(str, wregex(L",$"), L"");
   str = regex_replace(str, wregex(L"\\s*(,|:|^|$)\\s*"), L"$1");
 }
 
-LRESULT FontSettingDialog::OnOk(WORD, WORD, HWND, BOOL&) {
+LRESULT FontSettingDialog::OnOk(WORD, WORD, HWND, BOOL &) {
   EndDialog(IDOK);
   return (INT_PTR)TRUE;
 }
 
-LRESULT FontSettingDialog::OnClose(WORD, WORD, HWND, BOOL&) {
+LRESULT FontSettingDialog::OnClose(WORD, WORD, HWND, BOOL &) {
   EndDialog(IDCANCEL);
   return (INT_PTR)TRUE;
 }
 
-LRESULT FontSettingDialog::OnInitDialog(UINT, WPARAM wParam,
-                                        LPARAM lParam,
-                                        BOOL& bHandled) {
+LRESULT FontSettingDialog::OnInitDialog(UINT, WPARAM wParam, LPARAM lParam,
+                                        BOOL &bHandled) {
   m_hFontPickerCbb = GetDlgItem(IDC_CBB_FONTPICKER);
   InitFontPickerItems();
 
   m_hFontFaceNameCbb = GetDlgItem(IDC_CBB_FONTFACE_NAME);
   const wstring fontFaceName[] = {L"label_font_face", L"font_face",
                                   L"comment_font_face"};
-  for (const auto& name : fontFaceName)
+  for (const auto &name : fontFaceName)
     SendMessage(m_hFontFaceNameCbb, CB_ADDSTRING, 0, (LPARAM)name.c_str());
   SendMessage(m_hFontFaceNameCbb, CB_SETCURSEL, 1, 0);
 
@@ -126,11 +124,11 @@ LRESULT FontSettingDialog::OnInitDialog(UINT, WPARAM wParam,
   SendMessage(m_hComboBoxFontPoint, CB_SETCURSEL, sel, 0);
 
   m_hFontStyleCbb = GetDlgItem(IDC_CBB_FONTSTYLE);
-  for (auto& it : _mapStyle) {
+  for (auto &it : _mapStyle) {
     SendMessage(m_hFontStyleCbb, CB_ADDSTRING, 0, (LPARAM)it.first.c_str());
   }
   m_hFontWeightCbb = GetDlgItem(IDC_CBB_FONTWEIGHT);
-  for (auto& it : _mapWeight) {
+  for (auto &it : _mapWeight) {
     SendMessage(m_hFontWeightCbb, CB_ADDSTRING, 0, (LPARAM)it.first.c_str());
   }
 
@@ -171,7 +169,7 @@ wstring FontSettingDialog::GetComboBoxSelectStr(HWND target) {
   return L"";
 }
 
-wstring FontSettingDialog::GetTextOfEdit(HWND& hwndEdit) {
+wstring FontSettingDialog::GetTextOfEdit(HWND &hwndEdit) {
   wchar_t buffer[4096] = {0};
   LRESULT textLength = SendMessage(hwndEdit, WM_GETTEXTLENGTH, 0, 0);
   if (textLength > 0 && textLength <= (_countof(buffer) - 1)) {
@@ -232,17 +230,15 @@ void FontSettingDialog::OnChangeFontFace() {
   auto curFontFaceName = GetComboBoxSelectStr(m_hFontFaceNameCbb);
   if (curFontFaceName == L"label_font_face") {
     m_font_face_ptr = &m_label_font_face;
-    SendMessage(m_hComboBoxFontPoint, CB_SETCURSEL, m_label_font_point, 0);
     m_font_point_ptr = &m_label_font_point;
   } else if (curFontFaceName == L"font_face") {
     m_font_face_ptr = &m_font_face;
-    SendMessage(m_hComboBoxFontPoint, CB_SETCURSEL, m_font_point, 0);
     m_font_point_ptr = &m_font_point;
   } else if (curFontFaceName == L"comment_font_face") {
     m_font_face_ptr = &m_comment_font_face;
-    SendMessage(m_hComboBoxFontPoint, CB_SETCURSEL, m_comment_font_point, 0);
     m_font_point_ptr = &m_comment_font_point;
   }
+  SendMessage(m_hComboBoxFontPoint, CB_SETCURSEL, *m_font_point_ptr, 0);
 
   auto style_str = MatchWordsOutLowerCaseTrim1st(*m_font_face_ptr, patStyle);
   auto weight_str = MatchWordsOutLowerCaseTrim1st(*m_font_face_ptr, patWeight);
@@ -287,7 +283,7 @@ void FontSettingDialog::OnChangeFontFaceEdit() {
 }
 
 void FontSettingDialog::HandleRangeInput(int controlId,
-                                         const wchar_t* defaultValue) {
+                                         const wchar_t *defaultValue) {
   wchar_t range[10] = {0};
   GetDlgItemText(controlId, range, 10);
   std::wstring rangeStr(range);
@@ -357,7 +353,8 @@ LRESULT FontSettingDialog::OnCommand(UINT, WPARAM wParam, LPARAM lParam, BOOL) {
   return (INT_PTR)FALSE;
 }
 
-LRESULT FontSettingDialog::OnPaint(UINT, WPARAM wParam, LPARAM lParam, BOOL &bHandled) {
+LRESULT FontSettingDialog::OnPaint(UINT, WPARAM wParam, LPARAM lParam,
+                                   BOOL &bHandled) {
   PAINTSTRUCT ps;
   HDC hdc = ::BeginPaint(m_hWnd, &ps);
   RECT rect;
@@ -381,7 +378,7 @@ void FontSettingDialog::InitFontPickerItems() {
   ComPtr<IDWriteFactory> pDWriteFactory;
   HR(DWriteCreateFactory(
       DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
-      reinterpret_cast<IUnknown**>(pDWriteFactory.ReleaseAndGetAddressOf())));
+      reinterpret_cast<IUnknown **>(pDWriteFactory.ReleaseAndGetAddressOf())));
   ComPtr<IDWriteFontCollection> pFontCollection;
   // Get the system font collection.
   HR(pDWriteFactory->GetSystemFontCollection(
@@ -391,7 +388,7 @@ void FontSettingDialog::InitFontPickerItems() {
   familyCount = pFontCollection->GetFontFamilyCount();
   ComPtr<IDWriteFontFamily> pFontFamily;
   ComPtr<IDWriteLocalizedStrings> pFamilyNames;
-  const auto func = [&](const wchar_t* localeName) -> wstring {
+  const auto func = [&](const wchar_t *localeName) -> wstring {
     UINT32 index = 0;
     BOOL exists = false;
     HR(pFamilyNames->FindLocaleName(localeName, &index, &exists));
@@ -414,7 +411,7 @@ void FontSettingDialog::InitFontPickerItems() {
   // std::sort(fonts.begin(), fonts.end());
   //  sort fonts reverse order
   std::sort(fonts.begin(), fonts.end(), std::greater<wstring>());
-  for (const auto& font : fonts) {
+  for (const auto &font : fonts) {
     SendMessage(m_hFontPickerCbb, CB_ADDSTRING, 0, (LPARAM)font.c_str());
   }
   SendMessage(m_hFontPickerCbb, CB_SETCURSEL, 0, 0);
